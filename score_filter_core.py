@@ -4,14 +4,14 @@ from pathlib import Path
 import pandas as pd
 import traceback
 
-# 显式导入，帮助 PyInstaller 收集 openpyxl 子模块
+# 显式导入 openpyxl，便于 PyInstaller 收集
 try:
     import openpyxl  # noqa: F401
 except Exception:
-    # 不终止，仅用于打包收集依赖
     pass
 
 DEFAULT_PUBCLASS_QUALIFIED_NUM = 10
+SUPPORTED_EXTS = {".xlsx", ".xls"}
 
 def find_col_exact(columns, wanted):
     for c in columns:
@@ -19,22 +19,38 @@ def find_col_exact(columns, wanted):
             return c
     return None
 
-def process_file(infile_path, pubclass_qualified_num=DEFAULT_PUBCLASS_QUALIFIED_NUM,
-                 divide_output=False, log_fn=None):
+def _read_excel_auto(path):
+    """按扩展名自动选择引擎：.xlsx -> openpyxl；.xls -> xlrd（如需支持请自行安装xlrd==1.2.0）"""
+    ext = Path(path).suffix.lower()
+    if ext == ".xlsx":
+        return pd.read_excel(path, dtype={0: str}, engine="openpyxl")
+    elif ext == ".xls":
+        try:
+            import xlrd  # noqa: F401
+        except Exception as e:
+            raise RuntimeError("检测到 .xls 文件，但未安装 xlrd==1.2.0；"
+                               "建议先将 .xls 另存为 .xlsx，或安装 xlrd==1.2.0 再试。") from e
+        return pd.read_excel(path, dtype={0: str}, engine="xlrd")
+    else:
+        raise ValueError("仅支持 .xlsx 或 .xls")
+
+def process_one_file(infile_path, pubclass_qualified_num=DEFAULT_PUBCLASS_QUALIFIED_NUM,
+                     divide_output=False, output_dir: str | Path | None = None, log_fn=None):
     """
-    处理主逻辑 — 返回 (success_bool, message_or_exception)
-    log_fn: 可选回调，用于写日志（接收 str）
+    处理单个文件。返回 (success: bool, summary: str, outputs: dict)
+    outputs: {"xlsx": Path, "csv_rule1": Path|None, "csv_rule2": Path|None, "csv_rule3": Path|None}
     """
     try:
         def log(s=""):
-            if log_fn:
-                log_fn(s)
-            else:
-                print(s)
+            if log_fn: log_fn(s)
+            else: print(s)
 
-        infile = str(infile_path)
+        infile = Path(infile_path)
+        if infile.suffix.lower() not in SUPPORTED_EXTS:
+            return False, f"跳过（不支持的扩展名）：{infile.name}", {}
+
         log(f"读取文件: {infile}")
-        df = pd.read_excel(infile, dtype={0: str}, engine="openpyxl")
+        df = _read_excel_auto(infile)
         cols = list(df.columns)
 
         # 关键列
@@ -56,7 +72,7 @@ def process_file(infile_path, pubclass_qualified_num=DEFAULT_PUBCLASS_QUALIFIED_
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
 
-        # 班级人数（去重学号）
+        # 班级人数
         class_size = df[student_id_col].nunique(dropna=True)
         log(f"班级总人数: {class_size}")
 
@@ -67,7 +83,7 @@ def process_file(infile_path, pubclass_qualified_num=DEFAULT_PUBCLASS_QUALIFIED_
             is_public = pd.Series(False, index=df.index)
 
         # 规则一：公选 & 学分<阈值 & 成绩<60/空
-        if credit_col is not None and score_col is not None:
+        if (credit_col is not None) and (score_col is not None):
             df_public_lt = df.loc[
                 is_public &
                 (df[credit_col] < pubclass_qualified_num) &
@@ -128,42 +144,69 @@ def process_file(infile_path, pubclass_qualified_num=DEFAULT_PUBCLASS_QUALIFIED_
                     return name
             return None
 
-        subset_cols = [c for c in [student_id_col, course_name_col, _maybe_get_term_col(df)] if c in df_final.columns and c]
+        subset_cols = [c for c in [student_id_col, course_name_col, _maybe_get_term_col(df)] if c and c in df_final.columns]
         if subset_cols:
             before = len(df_final)
             df_final = df_final.drop_duplicates(subset=subset_cols, keep='first')
             log(f"去重 {subset_cols}: {before} -> {len(df_final)}")
 
-        # 输出
-        out_dir = Path(infile).parent
-        out_xlsx_final = out_dir / f"学业预警表_{Path(infile).stem}.xlsx"
+        # 输出目录
+        out_dir = Path(output_dir) if output_dir else infile.parent
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # 文件名
+        out_xlsx_final = out_dir / f"学业预警表_{infile.stem}.xlsx"
         df_final.to_excel(out_xlsx_final, index=False)
         log(f"总表已导出: {out_xlsx_final}")
 
+        csv1 = csv2 = csv3 = None
         if divide_output:
             if not df_public_lt.empty:
-                df_public_lt.to_csv(out_dir / f"{Path(infile).stem}_公选_学分小于{pubclass_qualified_num}.csv",
-                                    index=False, encoding="utf-8-sig")
+                csv1 = out_dir / f"{infile.stem}_公选_学分小于{pubclass_qualified_num}.csv"
+                df_public_lt.to_csv(csv1, index=False, encoding="utf-8-sig")
             if not export_zero_rows.empty:
-                export_zero_rows.to_csv(out_dir / f"{Path(infile).stem}_其他_0分需关注.csv",
-                                        index=False, encoding="utf-8-sig")
+                csv2 = out_dir / f"{infile.stem}_其他_0分需关注.csv"
+                export_zero_rows.to_csv(csv2, index=False, encoding="utf-8-sig")
             if not fail_rows.empty:
-                fail_rows.to_csv(out_dir / f"{Path(infile).stem}_其他_不及格小于60.csv",
-                                 index=False, encoding="utf-8-sig")
+                csv3 = out_dir / f"{infile.stem}_其他_不及格小于60.csv"
+                fail_rows.to_csv(csv3, index=False, encoding="utf-8-sig")
             log("分规则 CSV 已输出（divide_output=True）")
 
         summary = (
+            f"文件：{infile.name}\n"
             f"班级总人数: {class_size}\n"
             f"规则一: 学分<{pubclass_qualified_num} 且 成绩<60/空 - 学生数 {public_count}, 记录 {len(df_public_lt)}\n"
             f"规则二: 需关注记录 {len(export_zero_rows)}, 未开设课程数 {len(not_offered_names)}\n"
             f"规则三: 不及格人数 {fail_rows[student_id_col].nunique()}, 记录 {len(fail_rows)}\n"
             f"输出文件: {out_xlsx_final}"
         )
-        log(summary)
-        return True, summary
+
+        outputs = {"xlsx": out_xlsx_final, "csv_rule1": csv1, "csv_rule2": csv2, "csv_rule3": csv3}
+        return True, summary, outputs
 
     except Exception:
         tb = traceback.format_exc()
+        if log_fn: log_fn(tb)
+        return False, tb, {}
+
+def process_files(infiles, pubclass_qualified_num=DEFAULT_PUBCLASS_QUALIFIED_NUM,
+                  divide_output=False, output_dir: str | Path | None = None, log_fn=None):
+    """
+    批量处理。返回 (ok_overall: bool, combined_summary: str, results: list[dict])
+    results: 每个元素为 {"file": Path, "success": bool, "summary": str, "outputs": dict}
+    """
+    results = []
+    ok_all = True
+    for p in infiles:
+        success, summary, outputs = process_one_file(
+            p, pubclass_qualified_num=pubclass_qualified_num,
+            divide_output=divide_output, output_dir=output_dir, log_fn=log_fn
+        )
+        results.append({"file": Path(p), "success": success, "summary": summary, "outputs": outputs})
+        ok_all = ok_all and success
+
         if log_fn:
-            log_fn(tb)
-        return False, tb
+            log_fn("-" * 60)
+
+    combined = "批量处理完成：\n\n" + "\n\n".join(r["summary"] for r in results)
+    return ok_all, combined, results

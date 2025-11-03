@@ -7,81 +7,147 @@ import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-from score_filter_core import process_file, DEFAULT_PUBCLASS_QUALIFIED_NUM
+from score_filter_core import (
+    process_files, process_one_file,
+    DEFAULT_PUBCLASS_QUALIFIED_NUM, SUPPORTED_EXTS
+)
 
 class App:
     def __init__(self, root):
         self.root = root
         root.title("学业预警筛选工具（GUI）")
-        root.geometry("820x520")
+        root.geometry("800x800")
 
         frm = ttk.Frame(root, padding=10)
         frm.pack(fill=tk.BOTH, expand=True)
 
-        # 文件选择
-        file_row = ttk.Frame(frm)
-        file_row.pack(fill=tk.X, pady=4)
-        ttk.Label(file_row, text="输入 Excel 文件:").pack(side=tk.LEFT)
-        self.path_var = tk.StringVar()
-        self.entry_file = ttk.Entry(file_row, textvariable=self.path_var, width=70)
-        self.entry_file.pack(side=tk.LEFT, padx=6)
-        ttk.Button(file_row, text="浏览", command=self.browse_file).pack(side=tk.LEFT)
+        # ========== 文件区 ==========
+        file_frame = ttk.LabelFrame(frm, text="输入文件（可多选）", padding=8)
+        file_frame.pack(fill=tk.BOTH, expand=False)
 
-        # 参数
-        param_row = ttk.Frame(frm)
-        param_row.pack(fill=tk.X, pady=4)
-        ttk.Label(param_row, text="公选课学分阈值：").pack(side=tk.LEFT)
-        self.pubspin = tk.Spinbox(param_row, from_=1, to=100, width=6)
+        btns_row = ttk.Frame(file_frame)
+        btns_row.pack(fill=tk.X, pady=4)
+        ttk.Button(btns_row, text="添加文件…", command=self.add_files).pack(side=tk.LEFT)
+        ttk.Button(btns_row, text="添加文件夹…", command=self.add_folder).pack(side=tk.LEFT, padx=6)
+        ttk.Button(btns_row, text="移除选中", command=self.remove_selected).pack(side=tk.LEFT, padx=6)
+        ttk.Button(btns_row, text="清空列表", command=self.clear_list).pack(side=tk.LEFT, padx=6)
+
+        self.listbox = tk.Listbox(file_frame, selectmode=tk.EXTENDED, height=8)
+        self.listbox.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+
+        # ========== 输出设置 ==========
+        out_frame = ttk.LabelFrame(frm, text="输出设置", padding=8)
+        out_frame.pack(fill=tk.X, expand=False, pady=(10, 0))
+
+        self.use_input_dir = tk.BooleanVar(value=True)
+        cb = ttk.Checkbutton(out_frame, text="输出到各输入文件所在目录（默认）", variable=self.use_input_dir, command=self._toggle_outdir_state)
+        cb.pack(anchor=tk.W)
+
+        row_out = ttk.Frame(out_frame)
+        row_out.pack(fill=tk.X, pady=4)
+        ttk.Label(row_out, text="统一输出目录（可选）：").pack(side=tk.LEFT)
+
+        self.outdir_var = tk.StringVar()
+        self.outdir_entry = ttk.Entry(row_out, textvariable=self.outdir_var, width=70, state=tk.DISABLED)
+        self.outdir_entry.pack(side=tk.LEFT, padx=6)
+        ttk.Button(row_out, text="浏览", command=self.browse_outdir).pack(side=tk.LEFT)
+
+        # ========== 参数区 ==========
+        param_row = ttk.LabelFrame(frm, text="处理参数", padding=8)
+        param_row.pack(fill=tk.X, expand=False, pady=(10, 0))
+
+        row1 = ttk.Frame(param_row)
+        row1.pack(fill=tk.X)
+        ttk.Label(row1, text="公选课学分阈值：").pack(side=tk.LEFT)
+        self.pubspin = tk.Spinbox(row1, from_=1, to=100, width=6)
         self.pubspin.delete(0, tk.END)
         self.pubspin.insert(0, str(DEFAULT_PUBCLASS_QUALIFIED_NUM))
         self.pubspin.pack(side=tk.LEFT, padx=6)
+
         self.divide_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(param_row, text="分开输出各规则 CSV（divide_output）", variable=self.divide_var)\
+        ttk.Checkbutton(row1, text="分开输出各规则 CSV（divide_output）", variable=self.divide_var)\
             .pack(side=tk.LEFT, padx=10)
 
-        # 按钮
-        btn_row = ttk.Frame(frm)
-        btn_row.pack(fill=tk.X, pady=6)
-        self.run_btn = ttk.Button(btn_row, text="运行（Run）", command=self.on_run)
+        # ========== 操作区 ==========
+        ctl_row = ttk.Frame(frm)
+        ctl_row.pack(fill=tk.X, pady=10)
+        self.run_btn = ttk.Button(ctl_row, text="批量运行（Run）", command=self.on_run)
         self.run_btn.pack(side=tk.LEFT)
-        ttk.Button(btn_row, text="打开输出目录", command=self.open_out_dir).pack(side=tk.LEFT, padx=6)
-        ttk.Button(btn_row, text="退出", command=root.quit).pack(side=tk.RIGHT)
+        ttk.Button(ctl_row, text="退出", command=root.quit).pack(side=tk.RIGHT)
+
+        # 进度条
+        self.progress = ttk.Progressbar(frm, mode="indeterminate")
+        self.progress.pack(fill=tk.X, pady=(0, 6))
 
         # 日志
-        ttk.Label(frm, text="日志：").pack(anchor=tk.W, pady=(8,0))
-        self.txt = tk.Text(frm, height=18)
+        ttk.Label(frm, text="日志：").pack(anchor=tk.W, pady=(4, 0))
+        self.txt = tk.Text(frm, height=14)
         self.txt.pack(fill=tk.BOTH, expand=True)
         self.txt.configure(state=tk.DISABLED)
 
-        # 状态栏
-        self.status_var = tk.StringVar(value="Ready")
-        status = ttk.Label(root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
-        status.pack(fill=tk.X, side=tk.BOTTOM)
+        # 记录最近输出位置（用于“打开目录”扩展时）
+        self._last_outdir_used = None
 
-        self._last_out_dir = None
-
-    # ---------- UI handlers ----------
-    def browse_file(self):
-        filename = filedialog.askopenfilename(
-            title="请选择成绩表（Excel）",
+    # ---------- 文件区操作 ----------
+    def add_files(self):
+        filenames = filedialog.askopenfilenames(
+            title="选择 Excel 文件（可多选）",
             filetypes=[("Excel files", ".xlsx .xls"), ("All files", "*.*")]
         )
-        if filename:
-            self.path_var.set(filename)
+        if not filenames: return
+        for fn in filenames:
+            p = Path(fn)
+            if p.suffix.lower() in SUPPORTED_EXTS and str(p) not in self.listbox.get(0, tk.END):
+                self.listbox.insert(tk.END, str(p))
 
+    def add_folder(self):
+        folder = filedialog.askdirectory(title="选择文件夹")
+        if not folder: return
+        count = 0
+        for ext in SUPPORTED_EXTS:
+            for p in Path(folder).glob(f"*{ext}"):
+                if str(p) not in self.listbox.get(0, tk.END):
+                    self.listbox.insert(tk.END, str(p))
+                    count += 1
+        if count == 0:
+            messagebox.showinfo("未发现文件", "该文件夹内未找到 .xlsx/.xls 文件。")
+
+    def remove_selected(self):
+        sel = list(self.listbox.curselection())
+        if not sel: return
+        sel.reverse()
+        for i in sel:
+            self.listbox.delete(i)
+
+    def clear_list(self):
+        self.listbox.delete(0, tk.END)
+
+    # ---------- 输出目录 ----------
+    def _toggle_outdir_state(self):
+        if self.use_input_dir.get():
+            self.outdir_entry.configure(state=tk.DISABLED)
+        else:
+            self.outdir_entry.configure(state=tk.NORMAL)
+
+    def browse_outdir(self):
+        d = filedialog.askdirectory(title="选择统一输出目录")
+        if d:
+            self.outdir_var.set(d)
+            self.use_input_dir.set(False)
+            self._toggle_outdir_state()
+
+    # ---------- 日志 ----------
     def log(self, s=""):
         self.txt.configure(state=tk.NORMAL)
         self.txt.insert(tk.END, s + "\n")
         self.txt.see(tk.END)
         self.txt.configure(state=tk.DISABLED)
 
+    # ---------- 运行 ----------
     def on_run(self):
-        infile = self.path_var.get().strip()
-        if not infile:
-            messagebox.showwarning("未选择文件", "请先选择输入 Excel 文件。")
-            return
-        if not Path(infile).exists():
-            messagebox.showerror("文件不存在", "指定的输入文件不存在，请检查路径。")
+        files = list(self.listbox.get(0, tk.END))
+        if not files:
+            messagebox.showwarning("未选择文件", "请先添加至少一个 Excel 文件。")
             return
 
         try:
@@ -90,28 +156,51 @@ class App:
             pub_val = DEFAULT_PUBCLASS_QUALIFIED_NUM
 
         divide_output = bool(self.divide_var.get())
+
+        # 输出目录策略
+        output_dir = None
+        if not self.use_input_dir.get():
+            out = self.outdir_var.get().strip()
+            if not out:
+                messagebox.showwarning("未选择输出目录", "请先选择统一输出目录或勾选“输出到输入文件同目录”。")
+                return
+            outp = Path(out)
+            try:
+                outp.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                messagebox.showerror("创建输出目录失败", f"无法创建目录：{outp}\n{e}")
+                return
+            output_dir = str(outp)
+
+        # UI状态
         self.run_btn.config(state=tk.DISABLED)
-        self.status_var.set("运行中...")
+        self.progress.start(10)
 
         def worker():
-            success, msg = process_file(infile, pub_val, divide_output, log_fn=self.log)
+            self.log(f"开始批量处理（{len(files)} 个文件）...")
+            ok, combined, results = process_files(
+                files, pubclass_qualified_num=pub_val,
+                divide_output=divide_output, output_dir=output_dir, log_fn=self.log
+            )
+            self.progress.stop()
             self.run_btn.config(state=tk.NORMAL)
-            self.status_var.set("就绪" if success else "出错（请查看日志）")
-            if success:
-                messagebox.showinfo("完成", "处理完成！输出已写入输入文件同一目录。")
-                self._last_out_dir = str(Path(infile).parent)
-            else:
-                messagebox.showerror("运行出错", "处理时发生错误，请查看日志。")
-        threading.Thread(target=worker, daemon=True).start()
 
-    def open_out_dir(self):
-        path = self._last_out_dir or (Path(self.path_var.get()).parent if self.path_var.get() else None)
-        if path and Path(path).exists():
-            if sys.platform.startswith("win"):
-                os.startfile(path)
-            elif sys.platform == "darwin":
-                os.system(f"open '{path}'")
+            # 记录最近输出目录
+            if output_dir:
+                self._last_outdir_used = output_dir
             else:
-                os.system(f"xdg-open '{path}'")
-        else:
-            messagebox.showinfo("无可打开目录", "还没有输出目录，请先运行一次处理。")
+                # 若按输入同目录，则记住第一个文件的父目录
+                try:
+                    self._last_outdir_used = str(Path(files[0]).parent)
+                except Exception:
+                    self._last_outdir_used = None
+
+            # 弹窗与日志
+            self.log("\n=== 批量汇总 ===")
+            self.log(combined)
+            if ok:
+                messagebox.showinfo("完成", "所有文件处理完毕！")
+            else:
+                messagebox.showwarning("部分失败", "已完成，但部分文件处理失败，请查看日志。")
+
+        threading.Thread(target=worker, daemon=True).start()
