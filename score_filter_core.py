@@ -38,7 +38,13 @@ def process_one_file(infile_path, pubclass_qualified_num=DEFAULT_PUBCLASS_QUALIF
                      divide_output=False, output_dir: str | Path | None = None, log_fn=None):
     """
     处理单个文件。返回 (success: bool, summary: str, outputs: dict)
-    outputs: {"xlsx": Path, "csv_rule1": Path|None, "csv_rule2": Path|None, "csv_rule3": Path|None}
+    outputs: {
+        "xlsx": Path,
+        "csv_rule1": Path|None,
+        "csv_rule2": Path|None,
+        "csv_rule3": Path|None,
+        "not_offered_courses": list[str]
+    }
     """
     try:
         def log(s=""):
@@ -108,7 +114,7 @@ def process_one_file(infile_path, pubclass_qualified_num=DEFAULT_PUBCLASS_QUALIF
             zero_counts = unpub_zero_rows.groupby(course_name_col)[student_id_col].nunique()
             for course, cnt in zero_counts.items():
                 if cnt == class_size:
-                    not_offered_names.append(course)  # 全员空/0 -> 未开设
+                    not_offered_names.append(str(course))  # 全员空/0 -> 未开设
                 else:
                     export_zero_rows = pd.concat(
                         [export_zero_rows, unpub_zero_rows[unpub_zero_rows[course_name_col] == course]],
@@ -117,7 +123,17 @@ def process_one_file(infile_path, pubclass_qualified_num=DEFAULT_PUBCLASS_QUALIF
         else:
             export_zero_rows = unpub_zero_rows.copy()
 
-        log(f"规则二：需关注记录 {len(export_zero_rows)}，未开设课程 {len(not_offered_names)}")
+        # ✅ 日志中输出未开设课程名称（全部列出）
+        if not_offered_names:
+            # 去重并排序再输出更美观
+            not_offered_sorted = sorted(set(map(str, not_offered_names)))
+            log(f"规则二：未开设课程（{len(not_offered_sorted)}）：")
+            for name in not_offered_sorted:
+                log(f"  - {name}")
+        else:
+            log("规则二：未开设课程（0）")
+
+        log(f"规则二：需关注记录 {len(export_zero_rows)}")
 
         # 规则三：非公选 & 非空/0 & 成绩<60
         if score_col is not None:
@@ -172,16 +188,25 @@ def process_one_file(infile_path, pubclass_qualified_num=DEFAULT_PUBCLASS_QUALIF
                 fail_rows.to_csv(csv3, index=False, encoding="utf-8-sig")
             log("分规则 CSV 已输出（divide_output=True）")
 
+        # 汇总
+        not_offered_sorted = sorted(set(map(str, not_offered_names)))
+        noff_str = ("无" if not not_offered_sorted else "、".join(not_offered_sorted))
         summary = (
             f"文件：{infile.name}\n"
             f"班级总人数: {class_size}\n"
             f"规则一: 学分<{pubclass_qualified_num} 且 成绩<60/空 - 学生数 {public_count}, 记录 {len(df_public_lt)}\n"
-            f"规则二: 需关注记录 {len(export_zero_rows)}, 未开设课程数 {len(not_offered_names)}\n"
+            f"规则二: 需关注记录 {len(export_zero_rows)}, 未开设课程 {len(not_offered_sorted)}：{noff_str}\n"
             f"规则三: 不及格人数 {fail_rows[student_id_col].nunique()}, 记录 {len(fail_rows)}\n"
             f"输出文件: {out_xlsx_final}"
         )
 
-        outputs = {"xlsx": out_xlsx_final, "csv_rule1": csv1, "csv_rule2": csv2, "csv_rule3": csv3}
+        outputs = {
+            "xlsx": out_xlsx_final,
+            "csv_rule1": csv1,
+            "csv_rule2": csv2,
+            "csv_rule3": csv3,
+            "not_offered_courses": not_offered_sorted
+        }
         return True, summary, outputs
 
     except Exception:

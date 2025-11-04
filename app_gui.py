@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 import sys
 import os
+import webbrowser
 from pathlib import Path
 import threading
 import tkinter as tk
@@ -12,11 +13,14 @@ from score_filter_core import (
     DEFAULT_PUBCLASS_QUALIFIED_NUM, SUPPORTED_EXTS
 )
 
+# 在这里放你的 GitHub 仓库链接（可点击打开）
+GITHUB_URL = "https://github.com/panchangda/score-filter-tool"  # TODO: 替换为你的实际地址
+
 class App:
     def __init__(self, root):
         self.root = root
         root.title("学业预警筛选工具（GUI）")
-        root.geometry("800x800")
+        root.geometry("900x800")
 
         frm = ttk.Frame(root, padding=10)
         frm.pack(fill=tk.BOTH, expand=True)
@@ -31,6 +35,8 @@ class App:
         ttk.Button(btns_row, text="添加文件夹…", command=self.add_folder).pack(side=tk.LEFT, padx=6)
         ttk.Button(btns_row, text="移除选中", command=self.remove_selected).pack(side=tk.LEFT, padx=6)
         ttk.Button(btns_row, text="清空列表", command=self.clear_list).pack(side=tk.LEFT, padx=6)
+        # 新增：介绍按钮
+        ttk.Button(btns_row, text="介绍", command=self.show_about).pack(side=tk.RIGHT)
 
         self.listbox = tk.Listbox(file_frame, selectmode=tk.EXTENDED, height=8)
         self.listbox.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
@@ -143,6 +149,48 @@ class App:
         self.txt.see(tk.END)
         self.txt.configure(state=tk.DISABLED)
 
+    # ---------- 介绍 / 关于 ----------
+    def show_about(self):
+        # 用 Toplevel 做一个简单“介绍”窗口，可点击打开 GitHub
+        top = tk.Toplevel(self.root)
+        top.title("介绍 / 关于")
+        top.geometry("700x500")
+        top.resizable(True, True)
+
+        container = ttk.Frame(top, padding=12)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        text = (
+            "【工具说明】\n"
+            "本工具用于对班级成绩表进行筛选与学业预警导出，核心规则如下：\n\n"
+            "规则一（公选未达标）：\n"
+            "  - 条件：课程为“公共选修课”，且“获得学分” < 阈值，且“成绩” < 60 或空白。\n"
+            "  - 作用：识别公选课学分不足或成绩不达标的记录。\n\n"
+            "规则二（疑似未开设 / 0分需关注）：\n"
+            "  - 对非公选课程：若该课程全班成绩均为 0 或空白，则视为“未开设”（不导出记录，仅在日志与汇总中列出课程名）。\n"
+            "  - 否则，非公选课程中成绩为 0 或空白的记录作为“需关注”导出。\n\n"
+            "规则三（非公选不及格）：\n"
+            "  - 对非公选课程：成绩在 (0, 60) 区间的记录视为不及格并导出。\n\n"
+            "其它处理：\n"
+            "  - 若存在列“一层节点”为“其它”的行，会被过滤。\n"
+            "  - 合并导出前会按 [学号, 课程名称, 学期(可选列)] 去重。\n"
+            "  - 可选将三类结果分别另存 CSV。\n\n"
+            "字段要求（列名）：\n"
+            "  - 第一列作为学号；需包含：一层节点、课程名称、获得学分、成绩（大小写一致）。\n\n"
+            "GitHub：点击下方链接打开仓库地址。"
+        )
+
+        lbl = ttk.Label(container, text=text, justify=tk.LEFT, anchor=tk.NW)
+        lbl.pack(fill=tk.BOTH, expand=True)
+
+        link = ttk.Label(container, text=GITHUB_URL, foreground="blue", cursor="hand2")
+        link.pack(anchor=tk.W, pady=(8, 4))
+        link.bind("<Button-1>", lambda e: webbrowser.open_new(GITHUB_URL))
+
+        btn_row = ttk.Frame(container)
+        btn_row.pack(fill=tk.X, pady=(8, 0))
+        ttk.Button(btn_row, text="关闭", command=top.destroy).pack(side=tk.RIGHT)
+
     # ---------- 运行 ----------
     def on_run(self):
         files = list(self.listbox.get(0, tk.END))
@@ -189,7 +237,6 @@ class App:
             if output_dir:
                 self._last_outdir_used = output_dir
             else:
-                # 若按输入同目录，则记住第一个文件的父目录
                 try:
                     self._last_outdir_used = str(Path(files[0]).parent)
                 except Exception:
